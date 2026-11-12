@@ -14,9 +14,11 @@ This is an unofficial personal project and is not affiliated with or endorsed by
 
 ## Download
 
-Each push to `main` builds a self-contained, single-file `AppleNotesPortable.exe`. Open the [Actions tab](../../actions), pick the latest successful run, and download the `AppleNotesPortable-win-x64` artifact (a GitHub login is required).
+Get the latest `AppleNotesPortable.exe` from the [Releases page](../../releases). It's a single self-contained file: put it in any folder and run it.
 
 The app needs the Microsoft Edge WebView2 Runtime, which is already installed on current versions of Windows. It does not need .NET installed.
+
+Builds of every commit to `main` are also available from the [Actions tab](../../actions) as the `AppleNotesPortable-win-x64` artifact (a GitHub login is required).
 
 ## Settings
 
@@ -38,6 +40,17 @@ Requires the .NET 9 SDK on Windows.
 dotnet run                  # build and run for testing
 dotnet publish -c Release   # portable single-file exe in bin\Release\net9.0-windows\win-x64\publish\
 ```
+
+## Releasing a new version
+
+Tag the commit and push the tag. GitHub Actions builds the exe with that version number stamped in and publishes a Release.
+
+```
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Tags with a suffix, like `v1.3.0-beta1`, are published as pre-releases.
 
 ## Credits
 
