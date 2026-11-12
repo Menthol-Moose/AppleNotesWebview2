@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>AppleNotesPortable</RootNamespace>
+    <AssemblyName>AppleNotesPortable</AssemblyName>
+    <ApplicationIcon Condition="Exists('Resources\Apple_Notes_icon.ico')">Resources\Apple_Notes_icon.ico</ApplicationIcon>
+
+    <!-- Publish settings for a portable, double-click .exe (dotnet publish -c Release) -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <!-- Bundle native DLLs (WebView2Loader.dll) into the single .exe too -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!--
+      The Microsoft.Web.WebView2 package bundles WinForms, WPF, and Core
+      variants. We only use the WinForms one, but the WPF variant's
+      WindowsBase reference conflicts in version with the WinForms/Core
+      reference assemblies, producing MSB3277. Harmless; silenced here.
+    -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
+  </ItemGroup>
+
+  <!--
+    The window icon is loaded at runtime via GetManifestResourceStream, so the
+    .ico must be compiled in as an embedded resource. The logical resource name
+    becomes RootNamespace + folder path + filename:
+        AppleNotesPortable.Resources.Apple_Notes_icon.ico
+    which is exactly what WebViewForm.Designer.cs looks for.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Apple_Notes_icon.ico" Condition="Exists('Resources\Apple_Notes_icon.ico')" />
+  </ItemGroup>
+
+</Project>
