@@ -8,9 +8,10 @@ This is an unofficial personal project and is not affiliated with or endorsed by
 
 - Opens straight to iCloud Notes in a fixed-size window.
 - Hides iCloud's top toolbar by shifting the page up out of view, so the window shows only Notes and not links to Mail, Calendar, and other iCloud apps.
+- Renders sharply on high-DPI displays and when moved between monitors with different scaling.
 - Stays signed in across restarts. Browser data is kept in `%LocalAppData%\AppleNotesPortable\WebView2`, so moving or rebuilding the app doesn't sign you out.
-- Saves power when idle: it suspends when minimized and lets the browser engine throttle when the window loses focus.
-- Reloads the page when the window regains focus, so changes made on other devices show up.
+- Saves power: it suspends while minimized.
+- Reloads to pick up changes made on other devices, on a schedule you choose (see `ReloadMode` below).
 
 ## Download
 
@@ -26,11 +27,11 @@ Builds of every commit to `main` are also available from the [Actions tab](../..
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `Width`, `Height` | 450, 700 | Window size in pixels |
-| `ClipHeight` | 52 | Pixels hidden at the top of the page. Raise it if part of iCloud's toolbar still shows; lower it if Notes content is cut off. |
-| `ReloadOnFocus` | true | Reload when the window regains focus, to pick up changes from other devices. Set to false to keep your place and refresh manually with Ctrl+R. |
-| `IdleThresholdSeconds` | 2 | How long the window must be unfocused before refocusing triggers a reload |
-| `SuspendWhenMinimized` | true | Fully suspend the web view while minimized |
+| `Width`, `Height` | 450, 700 | Window size at 100% display scaling; scaled automatically for your display |
+| `ClipHeight` | 52 | Height of iCloud's toolbar to hide, at 100% scaling. Raise it if part of the toolbar still shows; lower it if Notes content is cut off. |
+| `ReloadMode` | Automatic | `Manual`: reload only with Ctrl+R or F5. `Automatic`: also reload after the PC wakes from sleep or the screen turns back on, and when the screen is unlocked. `Timed`: everything in Automatic, plus a reload every `ReloadIntervalMinutes`. |
+| `ReloadIntervalMinutes` | 15 | Used only with `ReloadMode=Timed`. A timed reload waits until you've stopped typing or clicking in the app for a minute. |
+| `SuspendWhenMinimized` | true | Fully suspend the web view while minimized. Reloads that come due while minimized happen when you restore the window. |
 
 ## Building
 

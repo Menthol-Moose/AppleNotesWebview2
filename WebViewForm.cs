@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 
@@ -10,46 +11,62 @@ namespace AppleNotesPortable
     {
         private const string NotesUrl = "https://www.icloud.com/notes";
 
-        private readonly AppSettings _settings = AppSettings.Load();
+        // A timed reload never fires while you're using the app: the window is
+        // focused (or under the mouse) and there was input in the last minute.
+        private static readonly TimeSpan TypingGrace = TimeSpan.FromSeconds(60);
+        // Wake, screen-on and unlock often arrive together; one reload covers them.
+        private static readonly TimeSpan TriggerMergeWindow = TimeSpan.FromSeconds(15);
+        // After a wake, give Wi-Fi a moment to reconnect before reloading,
+        // and retry a few times if the network still isn't back.
+        private const int ReloadDelayMs = 3000;
+        private const int RetryDelayMs = 5000;
+        private const int MaxRetries = 6;
 
-        // Sync/idle state tracking.
-        private DateTime _hiddenSince = DateTime.MinValue;
-        private bool _pendingResync;     // window went idle; a refocus should pull
-        private bool _firstLoadComplete; // never reload before the first load/sign-in
-        private bool _waking;            // re-entrancy guard for WakeAndSync
+        private readonly AppSettings _settings = AppSettings.Load();
+        private readonly Timer _reloadDelayTimer = new Timer();
+        private readonly Timer _intervalTimer = new Timer { Interval = 30_000 };
+
+        private bool _firstLoadComplete;
+        private bool _isMinimized;
+        private bool _sessionLocked;
+        private bool _pendingReload;   // a trigger arrived while minimized or locked
+        private int _retriesLeft;
+        private DateTime _lastAutoReload = DateTime.MinValue;
+        private DateTime _lastNavigationStart = DateTime.UtcNow;
+
+        private IntPtr _consoleDisplayNotify = IntPtr.Zero;
+        private IntPtr _sessionDisplayNotify = IntPtr.Zero;
+        private bool _sessionNotifyRegistered;
+        private bool _consoleDisplayWasOff;
+        private bool _sessionDisplayWasOff;
 
         public WebViewForm()
         {
             InitializeComponent();
-            this.ClientSize = new Size(_settings.WindowWidth, _settings.WindowHeight);
 
-            // Drive sync off the OS window's focus/visibility, because WebView2
-            // does NOT propagate window state to the page on its own.
-            this.Activated += (s, e) => WakeAndSync();
-            this.Deactivate += (s, e) => MarkIdle();
+            _reloadDelayTimer.Tick += (s, e) => { _reloadDelayTimer.Stop(); DoReload(); };
+            _intervalTimer.Tick += IntervalTimer_Tick;
             this.Resize += Form_Resize;
+
+            // Moving to a monitor with different scaling: Windows resizes the
+            // window first, then we re-apply exact sizes for the new scale.
+            this.DpiChanged += (s, e) => BeginInvoke(new Action(ApplyLayout));
         }
 
         private async void WebViewForm_Load(object sender, EventArgs e)
         {
-            int clip = _settings.ClipHeight;
-            webView21.Bounds = new Rectangle(
-                0, -clip, contentHost.ClientSize.Width, contentHost.ClientSize.Height + clip);
+            ApplyLayout();
 
             // Pin the User Data Folder to a stable location in %LocalAppData%
             // so cookies (and therefore the iCloud sign-in) survive app
-            // rebuilds, moves, and WebView2 Runtime updates. The default
-            // location is next to the .exe, which is fragile: rename/move the
-            // exe and you get a fresh UDF with no cookies and have to sign in
-            // again. %LocalAppData%\AppleNotesPortable\WebView2 never changes.
+            // rebuilds, moves, and WebView2 Runtime updates.
             string udf = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "AppleNotesPortable", "WebView2");
 
-            CoreWebView2Environment env;
             try
             {
-                env = await CoreWebView2Environment.CreateAsync(null, udf);
+                var env = await CoreWebView2Environment.CreateAsync(null, udf);
                 await webView21.EnsureCoreWebView2Async(env);
             }
             catch (Exception ex)
@@ -63,91 +80,278 @@ namespace AppleNotesPortable
 
             var core = webView21.CoreWebView2;
 
-            // Keep reload (Ctrl+R / F5) available as a manual sync as well. A
-            // previous build disabling these would explain "Ctrl+R did nothing."
+            // Ctrl+R / F5 always work as a manual sync.
             core.Settings.AreBrowserAcceleratorKeysEnabled = true;
 
-            // Record that the page has loaded at least once so we never reload
-            // mid sign-in.
-            core.NavigationCompleted += (s, a) => { if (a.IsSuccess) _firstLoadComplete = true; };
+            core.NavigationStarting += (s, a) => _lastNavigationStart = DateTime.UtcNow;
+            core.NavigationCompleted += Core_NavigationCompleted;
 
             // Stay inside this one window.
             core.NewWindowRequested += (s, a) => a.Handled = true;
 
+            if (_settings.ReloadMode == ReloadMode.Timed)
+                _intervalTimer.Start();
+
+            // Retry the first load too, in case the app starts before Wi-Fi is up.
+            _retriesLeft = MaxRetries;
             core.Navigate(NotesUrl);
         }
 
-        // Window lost focus (possibly still on screen). Record the moment so a
-        // later refocus can decide whether it was idle long enough to warrant a
-        // cloud pull. We deliberately do NOT suspend here: the window may still
-        // be visible, and Chromium throttles an unfocused renderer on its own,
-        // which is the idle saving we want without blanking the window.
-        private void MarkIdle()
+        // Window size and clip height in settings.ini are at 100% scaling;
+        // convert them to real pixels for the monitor the window is on.
+        private void ApplyLayout()
         {
-            if (!_pendingResync)
+            if (WindowState == FormWindowState.Minimized)
+                return;
+
+            float scale = DeviceDpi / 96f;
+            var client = new Size(
+                (int)Math.Round(_settings.WindowWidth * scale),
+                (int)Math.Round(_settings.WindowHeight * scale));
+            int clip = (int)Math.Round(_settings.ClipHeight * scale);
+
+            ClientSize = client;
+            // Shift the page up by the clip height so iCloud's toolbar sits
+            // above the visible area: hidden and unclickable.
+            webView21.Bounds = new Rectangle(0, -clip, client.Width, client.Height + clip);
+        }
+
+        private void Core_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs a)
+        {
+            if (a.IsSuccess)
             {
-                _pendingResync = true;
-                _hiddenSince = DateTime.UtcNow;
+                _firstLoadComplete = true;
+                _retriesLeft = 0;
+                return;
+            }
+
+            // A load was replaced by another one; nothing to retry.
+            if (a.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled)
+                return;
+
+            // Usually means the network isn't back yet after a wake.
+            if (_retriesLeft > 0)
+            {
+                _retriesLeft--;
+                ScheduleReload(RetryDelayMs);
             }
         }
+
+        // ---- Triggers ----------------------------------------------------------
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+
+            var consoleGuid = NativeMethods.GUID_CONSOLE_DISPLAY_STATE;
+            var sessionGuid = NativeMethods.GUID_SESSION_DISPLAY_STATUS;
+            _consoleDisplayNotify = NativeMethods.RegisterPowerSettingNotification(
+                Handle, ref consoleGuid, NativeMethods.DEVICE_NOTIFY_WINDOW_HANDLE);
+            _sessionDisplayNotify = NativeMethods.RegisterPowerSettingNotification(
+                Handle, ref sessionGuid, NativeMethods.DEVICE_NOTIFY_WINDOW_HANDLE);
+            _sessionNotifyRegistered = NativeMethods.WTSRegisterSessionNotification(
+                Handle, NativeMethods.NOTIFY_FOR_THIS_SESSION);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            if (_consoleDisplayNotify != IntPtr.Zero)
+                NativeMethods.UnregisterPowerSettingNotification(_consoleDisplayNotify);
+            if (_sessionDisplayNotify != IntPtr.Zero)
+                NativeMethods.UnregisterPowerSettingNotification(_sessionDisplayNotify);
+            if (_sessionNotifyRegistered)
+                NativeMethods.WTSUnRegisterSessionNotification(Handle);
+
+            _consoleDisplayNotify = _sessionDisplayNotify = IntPtr.Zero;
+            _sessionNotifyRegistered = false;
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+
+            if (m.Msg == NativeMethods.WM_POWERBROADCAST)
+            {
+                long evt = m.WParam.ToInt64();
+                if (evt == NativeMethods.PBT_APMRESUMEAUTOMATIC)
+                    RequestAutoReload();   // woke from classic sleep or hibernation
+                else if (evt == NativeMethods.PBT_POWERSETTINGCHANGE && m.LParam != IntPtr.Zero)
+                    OnPowerSettingChange(m.LParam);
+            }
+            else if (m.Msg == NativeMethods.WM_WTSSESSION_CHANGE)
+            {
+                long reason = m.WParam.ToInt64();
+                if (reason == NativeMethods.WTS_SESSION_LOCK)
+                {
+                    _sessionLocked = true;
+                }
+                else if (reason == NativeMethods.WTS_SESSION_UNLOCK)
+                {
+                    _sessionLocked = false;
+                    RequestAutoReload();   // unlocked, with or without a password
+                }
+            }
+        }
+
+        // POWERBROADCAST_SETTING: GUID (16 bytes), DWORD DataLength, then the data.
+        private void OnPowerSettingChange(IntPtr lParam)
+        {
+            Guid setting = Marshal.PtrToStructure<Guid>(lParam);
+            int state = Marshal.ReadInt32(lParam, 20);   // 0 off, 1 on, 2 dimmed
+
+            if (setting == NativeMethods.GUID_CONSOLE_DISPLAY_STATE)
+                TrackDisplay(ref _consoleDisplayWasOff, state);
+            else if (setting == NativeMethods.GUID_SESSION_DISPLAY_STATUS)
+                TrackDisplay(ref _sessionDisplayWasOff, state);
+        }
+
+        // Display went fully off (screen timeout, sleep, Modern Standby) and has
+        // now come back on. A brief dim without turning off doesn't count.
+        private void TrackDisplay(ref bool wasOff, int state)
+        {
+            if (state == 0)
+            {
+                wasOff = true;
+            }
+            else if (state == 1 && wasOff)
+            {
+                wasOff = false;
+                RequestAutoReload();
+            }
+        }
+
+        private void IntervalTimer_Tick(object sender, EventArgs e)
+        {
+            if (_settings.ReloadMode != ReloadMode.Timed || _isMinimized || _sessionLocked)
+                return;
+            if (webView21?.CoreWebView2 == null)
+                return;
+            if (DateTime.UtcNow - _lastNavigationStart < TimeSpan.FromMinutes(_settings.ReloadIntervalMinutes))
+                return;
+            if (UserIsUsingApp())
+                return;   // check again on the next tick
+
+            RequestAutoReload();
+        }
+
+        private bool UserIsUsingApp()
+        {
+            bool engaged = Form.ActiveForm == this || Bounds.Contains(Cursor.Position);
+            return engaged && NativeMethods.GetIdleTime() < TypingGrace;
+        }
+
+        // ---- Reloading ---------------------------------------------------------
+
+        private void RequestAutoReload()
+        {
+            if (_settings.ReloadMode == ReloadMode.Manual)
+                return;
+            if (webView21?.CoreWebView2 == null)
+                return;
+
+            // Nothing useful to do while hidden; reload when the user can see it.
+            if (_isMinimized || _sessionLocked)
+            {
+                _pendingReload = true;
+                return;
+            }
+
+            if (DateTime.UtcNow - _lastAutoReload < TriggerMergeWindow)
+                return;
+            if (_reloadDelayTimer.Enabled)
+                return;   // one is already on its way
+
+            _retriesLeft = MaxRetries;
+            ScheduleReload(ReloadDelayMs);
+        }
+
+        private void ScheduleReload(int delayMs)
+        {
+            _reloadDelayTimer.Stop();
+            _reloadDelayTimer.Interval = delayMs;
+            _reloadDelayTimer.Start();
+        }
+
+        private void DoReload()
+        {
+            var core = webView21?.CoreWebView2;
+            if (core == null)
+                return;
+
+            if (_isMinimized || _sessionLocked)
+            {
+                _pendingReload = true;
+                return;
+            }
+
+            _pendingReload = false;
+            _lastAutoReload = DateTime.UtcNow;
+
+            // Reload keeps the current page; if nothing has loaded yet (offline at
+            // startup), go to Notes instead.
+            if (_firstLoadComplete)
+                core.Reload();
+            else
+                core.Navigate(NotesUrl);
+        }
+
+        // ---- Minimize / restore ------------------------------------------------
 
         private void Form_Resize(object sender, EventArgs e)
         {
-            if (this.WindowState == FormWindowState.Minimized)
-                GoIdleMinimized();
+            bool minimized = WindowState == FormWindowState.Minimized;
+            if (minimized == _isMinimized)
+                return;
+
+            _isMinimized = minimized;
+            if (minimized)
+                GoIdle();
             else
-                WakeAndSync();
+                WakeUp();
         }
 
-        // Minimized: nothing is on screen to keep live, so take the deepest
-        // power saving by suspending the web view entirely.
-        private async void GoIdleMinimized()
+        // Minimized: suspend the web view entirely for the deepest power saving.
+        private async void GoIdle()
         {
-            MarkIdle();
             var core = webView21?.CoreWebView2;
-            if (core == null) return;
+            if (core == null || !_settings.SuspendWhenMinimized)
+                return;
 
-            if (_settings.SuspendWhenMinimized)
+            webView21.Visible = false;   // suspend is only allowed while hidden
+            try { await core.TrySuspendAsync(); }
+            catch { /* not supported or already suspended */ }
+
+            // Restored before the suspend finished: undo it.
+            if (!_isMinimized)
+                WakeUp();
+        }
+
+        private void WakeUp()
+        {
+            var core = webView21?.CoreWebView2;
+            if (core == null)
+                return;
+
+            webView21.Visible = true;
+            try { core.Resume(); }
+            catch { /* wasn't suspended */ }
+
+            bool overdue = _settings.ReloadMode == ReloadMode.Timed &&
+                DateTime.UtcNow - _lastNavigationStart >= TimeSpan.FromMinutes(_settings.ReloadIntervalMinutes);
+
+            if (_pendingReload || overdue)
             {
-                // Suspend is only allowed when the web view is hidden; while the
-                // window is minimized this isn't visible to the user anyway.
-                webView21.Visible = false;
-                try { await core.TrySuspendAsync(); }
-                catch { /* not supported / already suspended */ }
+                _pendingReload = false;
+                RequestAutoReload();
             }
         }
 
-        // Window returned to the foreground: wake the engine and, if it was idle
-        // long enough, force a fresh pull from iCloud by reloading. The reload
-        // is the reliable cloud sync, since iCloud's web client doesn't
-        // dependably push incoming changes into an open page.
-        private void WakeAndSync()
+        protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            if (_waking) return;
-            _waking = true;
-            try
-            {
-                var core = webView21?.CoreWebView2;
-                if (core == null) return;
-
-                if (!webView21.Visible)
-                    webView21.Visible = true;
-
-                try { core.Resume(); }
-                catch { /* wasn't suspended */ }
-
-                if (_pendingResync)
-                {
-                    bool idleEnough =
-                        (DateTime.UtcNow - _hiddenSince).TotalSeconds >= _settings.IdleThresholdSeconds;
-
-                    if (_settings.ReloadOnFocus && _firstLoadComplete && idleEnough)
-                        core.Reload();
-
-                    _pendingResync = false;
-                }
-            }
-            finally { _waking = false; }
+            _reloadDelayTimer.Stop();
+            _intervalTimer.Stop();
+            base.OnFormClosed(e);
         }
     }
 }

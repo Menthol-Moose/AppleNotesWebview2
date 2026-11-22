@@ -5,20 +5,27 @@ using System.IO;
 
 namespace AppleNotesPortable
 {
+    internal enum ReloadMode
+    {
+        Manual,     // reload only on Ctrl+R / F5
+        Automatic,  // also reload after wake from sleep / screen-off, and on unlock
+        Timed       // Automatic, plus a reload every ReloadIntervalMinutes
+    }
+
     // Reads settings.ini from the application folder (portable: travels next to
     // the .exe). Section headers like [Window] are cosmetic; parsing is on
     // simple key=value lines, so the file is hard to break.
     internal sealed class AppSettings
     {
+        // Window size and clip height are in 100%-scale pixels; the app scales
+        // them to the monitor's DPI at startup.
         public int WindowWidth { get; private set; } = 450;
         public int WindowHeight { get; private set; } = 700;
         public int ClipHeight { get; private set; } = 52;
 
-        // Reload the page (pull latest from iCloud) when the window regains focus.
-        public bool ReloadOnFocus { get; private set; } = true;
-        // Don't reload unless the window was idle this many seconds first.
-        public int IdleThresholdSeconds { get; private set; } = 2;
-        // Suspend the web view entirely while minimized.
+        public ReloadMode ReloadMode { get; private set; } = ReloadMode.Automatic;
+        public int ReloadIntervalMinutes { get; private set; } = 15;
+
         public bool SuspendWhenMinimized { get; private set; } = true;
 
         public static AppSettings Load()
@@ -50,15 +57,26 @@ namespace AppleNotesPortable
             s.WindowWidth = GetInt(map, "Width", s.WindowWidth);
             s.WindowHeight = GetInt(map, "Height", s.WindowHeight);
             s.ClipHeight = GetInt(map, "ClipHeight", s.ClipHeight);
-            s.ReloadOnFocus = GetBool(map, "ReloadOnFocus", s.ReloadOnFocus);
-            s.IdleThresholdSeconds = GetInt(map, "IdleThresholdSeconds", s.IdleThresholdSeconds);
+            s.ReloadIntervalMinutes = GetInt(map, "ReloadIntervalMinutes", s.ReloadIntervalMinutes);
             s.SuspendWhenMinimized = GetBool(map, "SuspendWhenMinimized", s.SuspendWhenMinimized);
+
+            if (map.TryGetValue("ReloadMode", out var mode) &&
+                Enum.TryParse(mode, true, out ReloadMode parsed) &&
+                Enum.IsDefined(typeof(ReloadMode), parsed))
+            {
+                s.ReloadMode = parsed;
+            }
+            else if (map.ContainsKey("ReloadOnFocus") && !GetBool(map, "ReloadOnFocus", true))
+            {
+                // Older settings.ini files: ReloadOnFocus=false meant "manual only".
+                s.ReloadMode = ReloadMode.Manual;
+            }
 
             // Sanity clamps.
             if (s.WindowWidth < 200) s.WindowWidth = 200;
             if (s.WindowHeight < 200) s.WindowHeight = 200;
             if (s.ClipHeight < 0) s.ClipHeight = 0;
-            if (s.IdleThresholdSeconds < 0) s.IdleThresholdSeconds = 0;
+            if (s.ReloadIntervalMinutes < 1) s.ReloadIntervalMinutes = 1;
 
             return s;
         }
@@ -79,35 +97,34 @@ namespace AppleNotesPortable
             }
         }
 
-        private const string DefaultIni =
+        internal const string DefaultIni =
 @"; AppleNotesPortable settings
 ; Edit these values and restart the app.
 
 [Window]
-; Size of the app window, in pixels.
+; Size of the app window at 100% display scaling. The app scales it to your
+; display's scaling automatically (e.g. 900x1400 real pixels at 200%).
 Width=450
 Height=700
 
 [WebView]
-; Pixels clipped off the top of the page to hide iCloud's toolbar.
-; Increase if any chrome still shows; decrease if it cuts into content.
+; Height of iCloud's toolbar to hide, at 100% scaling (also auto-scaled).
+; Increase if any toolbar still shows; decrease if it cuts into Notes.
 ClipHeight=52
 
 [Sync]
-; Pull the latest from iCloud by reloading the page when the window regains
-; focus. This is the reliable way to see changes made on another device,
-; because iCloud's web client does not dependably push incoming changes into
-; an already-open page. Trade-off: a reload may reset which note is selected
-; (your edits are safe; iCloud auto-saves them). Set to false to keep your
-; place and sync only on a manual Ctrl+R.
-ReloadOnFocus=true
-; Only reload if the window was idle/unfocused at least this many seconds,
-; so a quick alt-tab doesn't trigger a reload.
-IdleThresholdSeconds=2
+; When to reload the page to pull the latest from iCloud:
+;   Manual    - only when you press Ctrl+R or F5
+;   Automatic - also after the PC wakes from sleep or the screen turns back
+;               on, and when the screen is unlocked
+;   Timed     - everything in Automatic, plus a reload every
+;               ReloadIntervalMinutes (never while you're typing in the app)
+ReloadMode=Automatic
+; Used only when ReloadMode=Timed.
+ReloadIntervalMinutes=15
 
 [Idle]
-; Fully suspend the web view while minimized (deepest power saving). It
-; resumes and re-syncs automatically when you restore the window.
+; Fully suspend the web view while minimized (deepest power saving).
 SuspendWhenMinimized=true
 ";
     }
