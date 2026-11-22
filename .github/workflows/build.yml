@@ -28,7 +28,7 @@ jobs:
       - name: Upload exe
         uses: actions/upload-artifact@v7
         with:
-          name: AppleNotesPortable-win-x64
+          name: AppleNotesPortable-win-arm64
           path: |
             publish/AppleNotesPortable.exe
             settings.ini

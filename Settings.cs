@@ -27,6 +27,7 @@ namespace AppleNotesPortable
         public int ReloadIntervalMinutes { get; private set; } = 15;
 
         public bool SuspendWhenMinimized { get; private set; } = true;
+        public bool ReloadOnRestore { get; private set; } = true;
 
         public static AppSettings Load()
         {
@@ -59,6 +60,7 @@ namespace AppleNotesPortable
             s.ClipHeight = GetInt(map, "ClipHeight", s.ClipHeight);
             s.ReloadIntervalMinutes = GetInt(map, "ReloadIntervalMinutes", s.ReloadIntervalMinutes);
             s.SuspendWhenMinimized = GetBool(map, "SuspendWhenMinimized", s.SuspendWhenMinimized);
+            s.ReloadOnRestore = GetBool(map, "ReloadOnRestore", s.ReloadOnRestore);
 
             if (map.TryGetValue("ReloadMode", out var mode) &&
                 Enum.TryParse(mode, true, out ReloadMode parsed) &&
@@ -126,6 +128,10 @@ ReloadIntervalMinutes=15
 [Idle]
 ; Fully suspend the web view while minimized (deepest power saving).
 SuspendWhenMinimized=true
+; When restoring from minimized, reload if a reload came due while it was
+; minimized (a wake or unlock in Automatic/Timed mode, or the interval
+; passing in Timed mode). Set to false to skip it and use the app right away.
+ReloadOnRestore=true
 ";
     }
 }

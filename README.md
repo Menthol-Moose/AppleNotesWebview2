@@ -15,11 +15,11 @@ This is an unofficial personal project and is not affiliated with or endorsed by
 
 ## Download
 
-Get the latest `AppleNotesPortable.exe` from the [Releases page](../../releases). It's a single self-contained file: put it in any folder and run it.
+Get the latest `AppleNotesPortable.exe` from the [Releases page](../../releases). It's a single self-contained file for ARM64 Windows PCs (Snapdragon-based, like the Surface Laptop 7): put it in any folder and run it.
 
 The app needs the Microsoft Edge WebView2 Runtime, which is already installed on current versions of Windows. It does not need .NET installed.
 
-Builds of every commit to `main` are also available from the [Actions tab](../../actions) as the `AppleNotesPortable-win-x64` artifact (a GitHub login is required).
+Builds of every commit to `main` are also available from the [Actions tab](../../actions) as the `AppleNotesPortable-win-arm64` artifact (a GitHub login is required).
 
 ## Settings
 
@@ -31,7 +31,8 @@ Builds of every commit to `main` are also available from the [Actions tab](../..
 | `ClipHeight` | 52 | Height of iCloud's toolbar to hide, at 100% scaling. Raise it if part of the toolbar still shows; lower it if Notes content is cut off. |
 | `ReloadMode` | Automatic | `Manual`: reload only with Ctrl+R or F5. `Automatic`: also reload after the PC wakes from sleep or the screen turns back on, and when the screen is unlocked. `Timed`: everything in Automatic, plus a reload every `ReloadIntervalMinutes`. |
 | `ReloadIntervalMinutes` | 15 | Used only with `ReloadMode=Timed`. A timed reload waits until you've stopped typing or clicking in the app for a minute. |
-| `SuspendWhenMinimized` | true | Fully suspend the web view while minimized. Reloads that come due while minimized happen when you restore the window. |
+| `SuspendWhenMinimized` | true | Fully suspend the web view while minimized. |
+| `ReloadOnRestore` | true | When restoring from minimized, reload if one came due while minimized. Set to false to skip that reload and use the app immediately. |
 
 ## Building
 
@@ -39,7 +40,7 @@ Requires the .NET 9 SDK on Windows.
 
 ```
 dotnet run                  # build and run for testing
-dotnet publish -c Release   # portable single-file exe in bin\Release\net9.0-windows\win-x64\publish\
+dotnet publish -c Release   # portable single-file exe in bin\Release\net9.0-windows\win-arm64\publish\
 ```
 
 ## Releasing a new version

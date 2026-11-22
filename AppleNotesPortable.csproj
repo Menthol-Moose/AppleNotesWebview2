@@ -11,7 +11,8 @@
     <ApplicationIcon Condition="Exists('Resources\Apple_Notes_icon.ico')">Resources\Apple_Notes_icon.ico</ApplicationIcon>
 
     <!-- Publish settings for a portable, double-click .exe (dotnet publish -c Release) -->
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Native ARM64 (Snapdragon) build -->
+    <RuntimeIdentifier>win-arm64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <PublishReadyToRun>true</PublishReadyToRun>

@@ -19,6 +19,8 @@ namespace AppleNotesPortable
         // After a wake, give Wi-Fi a moment to reconnect before reloading,
         // and retry a few times if the network still isn't back.
         private const int ReloadDelayMs = 3000;
+        // Restoring from minimized isn't a wake, so the network is already up.
+        private const int RestoreReloadDelayMs = 100;
         private const int RetryDelayMs = 5000;
         private const int MaxRetries = 6;
 
@@ -243,7 +245,7 @@ namespace AppleNotesPortable
 
         // ---- Reloading ---------------------------------------------------------
 
-        private void RequestAutoReload()
+        private void RequestAutoReload(int delayMs = ReloadDelayMs)
         {
             if (_settings.ReloadMode == ReloadMode.Manual)
                 return;
@@ -263,7 +265,7 @@ namespace AppleNotesPortable
                 return;   // one is already on its way
 
             _retriesLeft = MaxRetries;
-            ScheduleReload(ReloadDelayMs);
+            ScheduleReload(delayMs);
         }
 
         private void ScheduleReload(int delayMs)
@@ -343,7 +345,8 @@ namespace AppleNotesPortable
             if (_pendingReload || overdue)
             {
                 _pendingReload = false;
-                RequestAutoReload();
+                if (_settings.ReloadOnRestore)
+                    RequestAutoReload(RestoreReloadDelayMs);
             }
         }
 
